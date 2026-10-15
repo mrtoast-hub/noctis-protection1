@@ -1,28 +1,50 @@
 
+"use strict";
+
 const {
   Client,
   GatewayIntentBits,
-  PermissionFlagsBits,
-  SlashCommandBuilder,
+  Partials,
+  ActivityType,
+  Events,
   REST,
-  Routes,
-  EmbedBuilder,
-  ActionRowBuilder,
-  StringSelectMenuBuilder,
-  ActivityType
+  Routes
 } = require("discord.js");
 
 const express = require("express");
 const config = require("./config");
 const db = require("./database");
+const commandModule = require("./commands");
 
+const app = express();
+
+const PORT = Number(process.env.PORT) || 3000;
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
-const PORT = process.env.PORT || 3000;
+const GUILD_ID = process.env.GUILD_ID || null;
 
-if (!TOKEN || !CLIENT_ID) {
-  console.error("Missing DISCORD_TOKEN or CLIENT_ID.");
+if (!TOKEN) {
+  console.error(
+    "[NOCTIS] Missing DISCORD_TOKEN environment variable."
+  );
+  process.exit(1);
+}
+
+if (!CLIENT_ID) {
+  console.error(
+    "[NOCTIS] Missing CLIENT_ID environment variable."
+  );
+  process.exit(1);
+}
+
+if (
+  !commandModule ||
+  !Array.isArray(commandModule.commands) ||
+  typeof commandModule.handleInteraction !== "function"
+) {
+  console.error(
+    "[NOCTIS] commands.js must export commands and handleInteraction()."
+  );
   process.exit(1);
 }
 
@@ -31,466 +53,219 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildInvites
+  ],
+  partials: [
+    Partials.Channel,
+    Partials.Message,
+    Partials.GuildMember,
+    Partials.User
   ]
 });
 
-const app = express();
+app.disable("x-powered-by");
 
-app.get("/", (_req, res) => {
-  res.send("NOCTIS PROTECTION is running.");
-});
-
-app.get("/health", (_req, res) => {
-  res.json({
-    bot: config.BOT_NAME,
+app.get("/", (req, res) => {
+  res.status(200).json({
+    name: config.BOT_NAME,
     status: client.isReady() ? "online" : "starting",
-    uptime: Math.floor(process.uptime())
+    creator: config.CREATOR
   });
 });
 
-const commands = [
-  new SlashCommandBuilder()
-    .setName("help")
-    .setDescription("Open the NOCTIS command menu"),
+app.get("/health", (req, res) => {
+  const online = client.isReady();
 
-  new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("Check bot latency"),
+  res.status(online ? 200 : 503).json({
+    status: online ? "ok" : "starting",
+    bot: config.BOT_NAME,
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
 
-  new SlashCommandBuilder()
-    .setName("botinfo")
-    .setDescription("View bot information"),
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[WEB] Health server listening on port ${PORT}`);
+});
 
-  new SlashCommandBuilder()
-    .setName("serverinfo")
-    .setDescription("View this server's information"),
+let activityIndex = 0;
 
-  new SlashCommandBuilder()
-    .setName("userinfo")
-    .setDescription("View a member's information")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Choose a member")
-    ),
+const activities = [
+  {
+    name: "(user)",
+    type: ActivityType.Watching
+  },
+  {
+    name: "Protecting Server",
+    type: ActivityType.Playing
+  }
+];
 
-  new SlashCommandBuilder()
-    .setName("avatar")
-    .setDescription("View a user's avatar")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Choose a user")
-    ),
+function rotateActivity() {
+  if (!client.user) return;
 
-  new SlashCommandBuilder()
-    .setName("noctis_pfp")
-    .setDescription("View a user's profile picture")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Choose a user")
-    ),
+  const activity = activities[activityIndex];
 
-  new SlashCommandBuilder()
-    .setName("noctis_banner")
-    .setDescription("View a user's Discord banner")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Choose a user")
-    ),
+  client.user.setActivity(activity.name, {
+    type: activity.type
+  });
 
-  new SlashCommandBuilder()
-    .setName("welcome-set")
-    .setDescription("Configure the welcome message")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Welcome channel")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("message")
-        .setDescription("Use {user}, {username}, {server}, {membercount}")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("welcome-toggle")
-    .setDescription("Enable or disable welcome messages")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addBooleanOption(o =>
-      o.setName("enabled")
-        .setDescription("Enable welcome messages?")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("leave-set")
-    .setDescription("Configure the leave message")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Leave channel")
-        .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("message")
-        .setDescription("Use {user}, {username}, {server}, {membercount}")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("leave-toggle")
-    .setDescription("Enable or disable leave messages")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addBooleanOption(o =>
-      o.setName("enabled")
-        .setDescription("Enable leave messages?")
-        .setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName("level-notifications")
-    .setDescription("Configure level-up notifications")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Notification channel")
-        .setRequired(true)
-    )
-    .addBooleanOption(o =>
-      o.setName("enabled")
-        .setDescription("Enable notifications?")
-        .setRequired(true)
-    )
-].map(command => command.toJSON());
-
-function makeEmbed(title, description) {
-  return new EmbedBuilder()
-    .setColor(config.COLORS.primary)
-    .setTitle(title)
-    .setDescription(description)
-    .setFooter({ text: config.BOT_NAME });
+  activityIndex = (activityIndex + 1) % activities.length;
 }
 
-function fillTemplate(template, member) {
-  return template
-    .replaceAll("{user}", `<@${member.id}>`)
-    .replaceAll("{username}", member.user.username)
-    .replaceAll("{server}", member.guild.name)
-    .replaceAll("{membercount}", String(member.guild.memberCount));
-}
-
-const helpPages = {
-  Home: "Welcome to NOCTIS PROTECTION.\nChoose a category below to browse commands.",
-  Moderation: "`/clear` `/kick` `/ban` `/timeout`\nMore moderation commands will be added next.",
-  Utility: "`/ping` `/botinfo` `/serverinfo` `/userinfo` `/avatar` `/noctis_pfp` `/noctis_banner`",
-  Gambling: "Virtual-coin games will be added here. No real-money betting.",
-  Economy: "Virtual balance, daily rewards, and XP features are planned here.",
-  Partnership: "Ticket panels, ad confirmation, and staff assistance are planned here.",
-  System: "Defensive antinuke, raid protection, and security logs will be configured here."
-};
-
-function helpMenu() {
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId("noctis_help_category")
-    .setPlaceholder("Select a command category")
-    .addOptions(
-      config.CATEGORIES.map(category => ({
-        label: category,
-        value: category,
-        description: `${category} commands`
-      }))
-    );
-
-  return new ActionRowBuilder().addComponents(menu);
-}
-
-async function registerCommands() {
+async function registerSlashCommands() {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+  const payload = commandModule.commands.map(command => {
+    if (typeof command.toJSON === "function") {
+      return command.toJSON();
+    }
+
+    return command;
+  });
+
+  if (payload.length > 100) {
+    throw new Error(
+      `Found ${payload.length} top-level commands. ` +
+      "Discord allows at most 100 per command scope."
+    );
+  }
 
   const route = GUILD_ID
     ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID)
     : Routes.applicationCommands(CLIENT_ID);
 
-  await rest.put(route, { body: commands });
-  console.log(`Registered ${commands.length} slash commands.`);
+  await rest.put(route, { body: payload });
+
+  console.log(
+    `[COMMANDS] Registered ${payload.length} slash commands` +
+    (GUILD_ID ? ` in guild ${GUILD_ID}.` : " globally.")
+  );
 }
 
-client.once("ready", () => {
-  console.log(`Logged in as ${client.user.tag}`);
-
-  const activities = [
-    { name: "(user)", type: ActivityType.Watching },
-    { name: "Protecting Server", type: ActivityType.Playing }
-  ];
-
-  let activityIndex = 0;
-
-  const rotateActivity = () => {
-    const activity = activities[activityIndex];
-    client.user.setActivity(activity.name, { type: activity.type });
-    activityIndex = (activityIndex + 1) % activities.length;
-  };
+client.once(Events.ClientReady, async readyClient => {
+  console.log("----------------------------------");
+  console.log(`${config.BOT_NAME} is online.`);
+  console.log(`Logged in as: ${readyClient.user.tag}`);
+  console.log(`Creator: ${config.CREATOR}`);
+  console.log(`Servers: ${readyClient.guilds.cache.size}`);
+  console.log("----------------------------------");
 
   rotateActivity();
-  setInterval(rotateActivity, 30000);
 
-  console.log("NOCTIS PROTECTION is ready.");
-});
+  setInterval(() => {
+    rotateActivity();
+  }, 30000);
 
-client.on("guildMemberAdd", async member => {
   try {
-    const settings = db.getGuild(member.guild.id);
-
-    if (settings.welcomeEnabled && settings.welcomeChannelId) {
-      const channel = await member.guild.channels
-        .fetch(settings.welcomeChannelId)
-        .catch(() => null);
-
-      if (channel && channel.isTextBased()) {
-        await channel.send({
-          content: fillTemplate(settings.welcomeMessage, member)
-        });
-      }
-    }
+    await registerSlashCommands();
   } catch (error) {
-    console.error("Welcome event error:", error.message);
+    console.error(
+      "[COMMANDS] Registration failed:",
+      error.message
+    );
   }
 });
 
-client.on("guildMemberRemove", async member => {
+client.on(Events.InteractionCreate, async interaction => {
   try {
-    const settings = db.getGuild(member.guild.id);
-
-    if (settings.leaveEnabled && settings.leaveChannelId) {
-      const channel = await member.guild.channels
-        .fetch(settings.leaveChannelId)
-        .catch(() => null);
-
-      if (channel && channel.isTextBased()) {
-        await channel.send({
-          content: fillTemplate(settings.leaveMessage, member)
-        });
-      }
+    if (interaction.isChatInputCommand()) {
+      await commandModule.handleInteraction(interaction, {
+        client,
+        config,
+        db
+      });
+      return;
     }
-  } catch (error) {
-    console.error("Leave event error:", error.message);
-  }
-});
 
-client.on("messageCreate", async message => {
-  if (!message.guild || message.author.bot) return;
-
-  const content = message.content.trim().toLowerCase();
-
-  if (content === "nhelp" || content === "!help") {
-    return message.reply({
-      embeds: [
-        makeEmbed(
-          "NOCTIS PROTECTION",
-          "Use `/help` for the interactive command menu."
-        )
-      ]
-    }).catch(() => {});
-  }
-});
-
-client.on("interactionCreate", async interaction => {
-  try {
     if (interaction.isStringSelectMenu()) {
-      if (interaction.customId !== "noctis_help_category") return;
-
-      const category = interaction.values[0];
-
-      return interaction.update({
-        embeds: [
-          makeEmbed(category, helpPages[category] || "No commands listed yet.")
-        ],
-        components: [helpMenu()]
-      });
-    }
-
-    if (!interaction.isChatInputCommand()) return;
-
-    const { commandName } = interaction;
-
-    if (commandName === "help") {
-      return interaction.reply({
-        embeds: [makeEmbed("NOCTIS PROTECTION", helpPages.Home)],
-        components: [helpMenu()],
-        ephemeral: true
-      });
-    }
-
-    if (commandName === "ping") {
-      return interaction.reply({
-        embeds: [
-          makeEmbed("Pong!", `WebSocket latency: ${client.ws.ping} ms`)
-        ]
-      });
-    }
-
-    if (commandName === "botinfo") {
-      const embed = makeEmbed(
-        "Bot Information",
-        `**Name:** ${client.user.tag}\n**Servers:** ${client.guilds.cache.size}\n**Uptime:** ${Math.floor(process.uptime())} seconds`
-      ).setThumbnail(client.user.displayAvatarURL());
-
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    if (commandName === "serverinfo") {
-      if (!interaction.guild) {
-        return interaction.reply({
-          content: "Use this command in a server.",
-          ephemeral: true
+      if (typeof commandModule.handleSelectMenu === "function") {
+        await commandModule.handleSelectMenu(interaction, {
+          client,
+          config,
+          db
         });
       }
-
-      const guild = interaction.guild;
-      const embed = makeEmbed(
-        guild.name,
-        `**Members:** ${guild.memberCount}\n**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>\n**Server ID:** ${guild.id}`
-      );
-
-      if (guild.iconURL()) embed.setThumbnail(guild.iconURL());
-
-      return interaction.reply({ embeds: [embed] });
+      return;
     }
 
-    if (commandName === "userinfo") {
-      const user = interaction.options.getUser("user") || interaction.user;
-      const embed = makeEmbed(
-        `User Information: ${user.username}`,
-        `**Username:** ${user.tag}\n**User ID:** ${user.id}\n**Account created:** <t:${Math.floor(user.createdTimestamp / 1000)}:F>`
-      ).setThumbnail(user.displayAvatarURL({ size: 1024 }));
-
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    if (commandName === "avatar" || commandName === "noctis_pfp") {
-      const user = interaction.options.getUser("user") || interaction.user;
-
-      const embed = makeEmbed(
-        `${user.username}'s Profile Picture`,
-        `[Open full-size image](${user.displayAvatarURL({ size: 1024 })})`
-      ).setImage(user.displayAvatarURL({ size: 1024 }));
-
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    if (commandName === "noctis_banner") {
-      const user = interaction.options.getUser("user") || interaction.user;
-      const fetched = await client.users.fetch(user.id, { force: true });
-
-      if (!fetched.banner) {
-        return interaction.reply({
-          content: "This user has no accessible Discord profile banner.",
-          ephemeral: true
+    if (interaction.isButton()) {
+      if (typeof commandModule.handleButton === "function") {
+        await commandModule.handleButton(interaction, {
+          client,
+          config,
+          db
         });
       }
-
-      const url = fetched.bannerURL({ size: 1024 });
-
-      return interaction.reply({
-        embeds: [
-          makeEmbed(`${user.username}'s Banner`, `[Open full-size banner](${url})`)
-            .setImage(url)
-        ]
-      });
-    }
-
-    if (commandName === "welcome-set") {
-      const channel = interaction.options.getChannel("channel", true);
-      const message = interaction.options.getString("message", true);
-
-      db.updateGuild(interaction.guildId, {
-        welcomeChannelId: channel.id,
-        welcomeMessage: message
-      });
-
-      return interaction.reply({
-        content: "Welcome settings saved. Use `/welcome-toggle enabled:true` to turn them on.",
-        ephemeral: true
-      });
-    }
-
-    if (commandName === "welcome-toggle") {
-      const enabled = interaction.options.getBoolean("enabled", true);
-
-      db.updateGuild(interaction.guildId, { welcomeEnabled: enabled });
-
-      return interaction.reply({
-        content: `Welcome messages are now ${enabled ? "enabled" : "disabled"}.`,
-        ephemeral: true
-      });
-    }
-
-    if (commandName === "leave-set") {
-      const channel = interaction.options.getChannel("channel", true);
-      const message = interaction.options.getString("message", true);
-
-      db.updateGuild(interaction.guildId, {
-        leaveChannelId: channel.id,
-        leaveMessage: message
-      });
-
-      return interaction.reply({
-        content: "Leave settings saved. Use `/leave-toggle enabled:true` to turn them on.",
-        ephemeral: true
-      });
-    }
-
-    if (commandName === "leave-toggle") {
-      const enabled = interaction.options.getBoolean("enabled", true);
-
-      db.updateGuild(interaction.guildId, { leaveEnabled: enabled });
-
-      return interaction.reply({
-        content: `Leave messages are now ${enabled ? "enabled" : "disabled"}.`,
-        ephemeral: true
-      });
-    }
-
-    if (commandName === "level-notifications") {
-      const channel = interaction.options.getChannel("channel", true);
-      const enabled = interaction.options.getBoolean("enabled", true);
-
-      db.updateGuild(interaction.guildId, {
-        levelChannelId: channel.id,
-        levelNotificationsEnabled: enabled
-      });
-
-      return interaction.reply({
-        content: `Level notification settings saved. Status: ${enabled ? "enabled" : "disabled"}.`,
-        ephemeral: true
-      });
     }
   } catch (error) {
-    console.error("Interaction error:", error);
+    console.error("[INTERACTION] Error:", error);
 
     const response = {
-      content: "Something went wrong. Check the bot permissions and host logs.",
+      content: "Something went wrong while running this command.",
       ephemeral: true
     };
 
-    if (interaction.replied || interaction.deferred) {
-      return interaction.followUp(response).catch(() => {});
-    }
-
-    if (interaction.isRepliable()) {
-      return interaction.reply(response).catch(() => {});
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(response).catch(() => {});
+    } else if (interaction.isRepliable()) {
+      await interaction.reply(response).catch(() => {});
     }
   }
 });
 
-async function start() {
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Health server listening on port ${PORT}`);
-  });
+client.on(Events.GuildCreate, guild => {
+  console.log(`[GUILD] Joined ${guild.name} (${guild.id})`);
 
-  await registerCommands();
-  await client.login(TOKEN);
+  try {
+    db.getGuild(guild.id);
+  } catch (error) {
+    console.error("[DATABASE] Guild setup failed:", error.message);
+  }
+});
+
+client.on(Events.GuildDelete, guild => {
+  console.log(`[GUILD] Removed from ${guild.name} (${guild.id})`);
+});
+
+client.on(Events.Warn, info => {
+  console.warn("[DISCORD WARNING]", info);
+});
+
+client.on(Events.Error, error => {
+  console.error("[DISCORD CLIENT ERROR]", error);
+});
+
+process.on("unhandledRejection", error => {
+  console.error("[UNHANDLED REJECTION]", error);
+});
+
+process.on("uncaughtException", error => {
+  console.error("[UNCAUGHT EXCEPTION]", error);
+});
+
+async function shutdown(signal) {
+  console.log(`[SYSTEM] Received ${signal}; shutting down.`);
+
+  try {
+    client.destroy();
+
+    server.close(() => {
+      console.log("[WEB] Health server closed.");
+    });
+  } catch (error) {
+    console.error("[SYSTEM] Shutdown error:", error.message);
+  }
+
+  setTimeout(() => process.exit(0), 1000);
 }
 
-start().catch(error => {
-  console.error("Startup failed:", error);
-  process.exit(1);
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+client.login(TOKEN).catch(error => {
+  console.error("[LOGIN] Discord login failed:", error.message);
+  process.exitCode = 1;
 });
-  
