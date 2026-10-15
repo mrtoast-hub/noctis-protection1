@@ -2,14 +2,9 @@
 module.exports = {
   BOT_NAME: "NOCTIS PROTECTION",
   CREATOR: "NOCTIS",
-  PREFIXES: ["n", "!"],
+  PREFIX: "n",
 
   TWITCH_URL: "https://www.twitch.tv/noctis_official01",
-
-  ACTIVITIES: [
-    { type: 3, text: "your server" },
-    { type: 3, text: "Protecting Server" }
-  ],
 
   COLORS: {
     primary: 0xffffff,
@@ -30,14 +25,19 @@ module.exports = {
   ],
 
   DEFAULT_SETTINGS: {
+    prefix: "n",
+
     welcomeEnabled: false,
     welcomeChannelId: null,
-    welcomeMessage: "Welcome {user} to **{server}**! You are member #{membercount}.",
+    welcomeMessage:
+      "Welcome {user} to **{server}**! You are member #{membercount}.",
 
     leaveEnabled: false,
     leaveChannelId: null,
-    leaveMessage: "{username} has left **{server}**.",
+    leaveMessage:
+      "{username} has left **{server}**.",
 
+    logChannelId: null,
     levelNotificationsEnabled: true,
     levelChannelId: null,
 
@@ -45,7 +45,32 @@ module.exports = {
     partnershipRoleId: null,
     partnershipDestinationId: null,
 
-    logChannelId: null,
-    antinukeEnabled: false
+    antiRaidEnabled: false,
+    antiNukeEnabled: false,
+    antiSpamEnabled: false,
+
+    disabledCommands: [],
+    ignoredChannels: [],
+    automodEnabled: false,
+
+    createdAt: Date.now()
+  },
+
+  ECONOMY: {
+    dailyCoins: 250,
+    workMin: 50,
+    workMax: 300,
+    startingCoins: 0
+  },
+
+  XP: {
+    min: 10,
+    max: 20,
+    cooldown: 60000
+  },
+
+  TICKET: {
+    closeWord: "close",
+    confirmWord: "confirm"
   }
 };
